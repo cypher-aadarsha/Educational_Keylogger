@@ -11,14 +11,26 @@ with explicit user consent.
 """
 
 import os
+import sys
 
 # ---------------------------------------------------------------------------
 # Directory Settings
 # ---------------------------------------------------------------------------
 
 # Base directory where all log files will be stored.
-# Resolved relative to the project root (where main.py is located).
-LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+#
+# When running as a PyInstaller frozen executable (--onefile), __file__
+# points to a temporary extraction directory that is deleted on exit.
+# In that case we resolve relative to the *executable's* real location
+# so that the "logs/" folder appears next to the .exe file.
+if getattr(sys, "frozen", False):
+    # Frozen (PyInstaller) — use the directory containing the .exe
+    _BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    # Normal Python — use the project root (parent of this package)
+    _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+LOG_DIR = os.path.join(_BASE_DIR, "logs")
 
 # ---------------------------------------------------------------------------
 # Rotation Settings
